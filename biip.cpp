@@ -17,6 +17,26 @@ extern "C" {
 
 using namespace std;
 
+// For convenient trailing-return-types in C++11:
+#define AUTO_RETURN(...) \
+ noexcept(noexcept(__VA_ARGS__)) -> decltype(__VA_ARGS__) {return (__VA_ARGS__);}
+
+template<typename T>
+constexpr auto decayed_begin(T &&c)
+AUTO_RETURN(std::begin(std::forward<T>(c)))
+
+template<typename T>
+constexpr auto decayed_end(T &&c)
+AUTO_RETURN(std::end(std::forward<T>(c)))
+
+template<typename T, std::size_t N>
+constexpr auto decayed_begin(T(&c)[N])
+AUTO_RETURN(reinterpret_cast<typename std::remove_all_extents<T>::type *>(c    ))
+
+template<typename T, std::size_t N>
+constexpr auto decayed_end(T(&c)[N])
+AUTO_RETURN(reinterpret_cast<typename std::remove_all_extents<T>::type *>(c + N))
+
 // Definitions
 typedef struct IntPair {
     int x;
@@ -77,6 +97,9 @@ GRBenv *gurobi_env = nullptr;
 
 /// Used in multiple functions
 list<Coord> COORD_LIST;
+
+// OpenMP Variables
+omp_lock_t coord_list_lock;
 
 // For calculation of seconds
 double diff_clock(clock_t clock1, clock_t clock2) {
@@ -191,6 +214,11 @@ int main(int argc, char *argv[]) {
             eno++;
         }
     }
+
+    /** Initialize Gurobi Variables */
+    omp_set_dynamic(0);
+    omp_set_max_active_levels(3);
+    omp_init_lock(&coord_list_lock);
 
     /* Create environment */
     GRBloadenv(&gurobi_env, nullptr);
@@ -460,14 +488,19 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
     if (error) goto QUIT;
 
     if (optimization_status == GRB_OPTIMAL) {
-        if (MAX_OBJ_VAL < objective_value) {
-            MAX_OBJ_VAL = objective_value;
-            memcpy(MAX_SOL, sol, (newN + newM) * sizeof(double));
-            maxN = newN;
-            maxM = newM;
-            maxLN = newLN;
-            maxRN = newRN;
+
+#pragma omp critical
+        {
+            if (MAX_OBJ_VAL < objective_value) {
+                MAX_OBJ_VAL = objective_value;
+                memcpy(MAX_SOL, sol, (newN + newM) * sizeof(double));
+                maxN = newN;
+                maxM = newM;
+                maxLN = newLN;
+                maxRN = newRN;
+            }
         }
+
         is_opt_successful = 1;
     } else if (optimization_status == GRB_INF_OR_UNBD) {
         printf("Model is infeasible or unbounded\n");
@@ -509,8 +542,9 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
 }
 
 int quad_search(int IL, int JL, int IR, int JR) {
+    // printf("quadsearch(%d, %d, %d, %d),\t\t threads: %d,\t current: %d\n", IL, JL, IR, JR, omp_get_num_threads(), omp_get_thread_num());
+
     int maxEdges;
-    int m1, m2, m3;
     int I, J;
     int exists;
 
@@ -535,41 +569,68 @@ int quad_search(int IL, int JL, int IR, int JR) {
         free(enoarr);
     }
 
+    int quad_search_params[3][4];
+    int ms[3];
+
     if (exists) {
         maxEdges = I * J;
-        m1 = quad_search(I + 1, J + 1, IR, JR);
-        m2 = quad_search(IL, J + 1, I, JR);
-        m3 = quad_search(I + 1, JL, IR, J);
+        int paramsToCopy[3][4] = {{I + 1, J + 1, IR, JR},
+                                  {IL,    J + 1, I,  JR},
+                                  {I + 1, JL,    IR, J}};
+        std::copy(decayed_begin(paramsToCopy), decayed_end(paramsToCopy), decayed_begin(quad_search_params));
     } else {
         maxEdges = 0;
-        m1 = quad_search(IL, JL, I - 1, J - 1);
-        m2 = quad_search(IL, J, I - 1, JR);
-        m3 = quad_search(I, JL, IR, J - 1);
+        int paramsToCopy[3][4] = {{IL, JL, I - 1, J - 1},
+                                  {IL, J,  I - 1, JR},
+                                  {I,  JL, IR,    J - 1}};
+        std::copy(decayed_begin(paramsToCopy), decayed_end(paramsToCopy), decayed_begin(quad_search_params));
     }
 
-    if (maxEdges < m1) {
-        maxEdges = m1;
+    #pragma omp parallel for shared(ms, quad_search_params) default(none) num_threads(3)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            ms[i] = quad_search(quad_search_params[i][0], quad_search_params[i][1], quad_search_params[i][2],
+                                quad_search_params[i][3]);
+//            printf("i: %d, value: %d, total: %d, current: %d\n", i, ms[i], omp_get_num_threads(), omp_get_thread_num());
+        }
     }
-    if (maxEdges < m2) {
-        maxEdges = m2;
+
+    if (maxEdges < ms[0]) {
+        maxEdges = ms[0];
     }
-    if (maxEdges < m3) {
-        maxEdges = m3;
+    if (maxEdges < ms[1]) {
+        maxEdges = ms[1];
+    }
+    if (maxEdges < ms[2]) {
+        maxEdges = ms[2];
     }
     return (maxEdges);
 }
 
 int shall_we_solve(int I, int J, int newLN, int newRN) {
+    omp_set_lock(&coord_list_lock);
     list<Coord>::iterator li;
 
-    if (newLN * newRN < I * J) return (0);
-    for (li = COORD_LIST.begin(); li != COORD_LIST.end(); li++) {
-        if (((*li).x <= I) && ((*li).y <= J)) return (0);
+    if (newLN * newRN < I * J) {
+        omp_unset_lock(&coord_list_lock);
+        return (0);
     }
+
+    for (li = COORD_LIST.begin(); li != COORD_LIST.end(); li++) {
+        if (((*li).x <= I) && ((*li).y <= J)) {
+            omp_unset_lock(&coord_list_lock);
+            return (0);
+        }
+    }
+
+    omp_unset_lock(&coord_list_lock);
     return (1);
 }
 
 void update_coord_list(int I, int J) {
+    omp_set_lock(&coord_list_lock);
+
     list<Coord>::iterator li;
     struct Coord cr = Coord(I, J);
 
@@ -581,6 +642,8 @@ void update_coord_list(int I, int J) {
         li++;
     }
     COORD_LIST.push_front(cr);
+
+    omp_unset_lock(&coord_list_lock);
 }
 
 void mask_nodes(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM) {
