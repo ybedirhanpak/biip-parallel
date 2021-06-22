@@ -2,26 +2,22 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include <string>
 #include <iostream>
 #include <sys/time.h>
 #include <fstream>
 #include <vector>
 #include <map>
-#include <set>
 #include <list>
 #include <algorithm>
-#include <sys/time.h>
+#include <omp.h>
 
 extern "C" {
 #include "gurobi_c.h"
 }
 
-#define DEBUG_ENABLE 0
-
 using namespace std;
 
-// Definitions 
+// Definitions
 typedef struct IntPair {
     int x;
     int y;
@@ -33,307 +29,303 @@ struct IntPairCompare {
     }
 };
 
-// definitions
 struct Coord {
     int x, y;
+
+    Coord(int _x, int _y) {
+        x = _x;
+        y = _y;
+    }
 };
 
-// Global Variables 
-map<IntPair, int, IntPairCompare> edgemap;
-map<string, int> linkmap;
-vector<vector<int> *> lnodes;
-vector<vector<int> *> rnodes;
-vector<string> llabels;
-vector<string> rlabels;
-int maxobjval = 0;
-list<Coord> clist; // coordinates list
-double *sol;
-double *maxsol;
+// Function Prototypes
+void graphviz(const double *);
+
+int solve_gurobi(int I, int J);
+
+int quad_search(int IL, int JL, int IR, int JR);
+
+int shall_we_solve(int I, int J);
+
+void update_coord_list(int I, int J);
+
+void mask_nodes(int I, int J);
+
+/// Input variables
+
+// Number of nodes, edges
+int N, M;
+// Number of left nodes, right nodes
+int LN, RN;
+
+map<IntPair, int, IntPairCompare> EDGE_MAP;
+vector<vector<int> *> L_NODES;
+vector<vector<int> *> R_NODES;
+vector<string> L_LABELS;
+vector<string> R_LABELS;
+
+/// Computational Variables
+
+// Result variables
+double maxobjval = 0;
+double *maxsol;         // keeps the solution array when the obj val is found maximum
+
+// Used in only gurobi solve
+GRBenv *gurobi_env = nullptr;
+double *sol;            // solution array that is filled after gurobi solve
 int *ind;
 double *val;
 double *obj;
 char *vtype;
+
+// Used in multiple functions, needs to be localized
+list<Coord> coord_list; // coordinates list
 int *rmask;
 int *lmask;
 int *enoarr;
-
-// Function Prototypes 
-void graphviz(double *);
-
-int solvegurobi2(int ln, int rn, int m, int L, int K);
-
-int quadsearch(int, int, int, int, int, int, int);
-
-int shallwesolve(int, int);
-
-void updateclist(int, int);
-
-void masknodes(int, int);
-
-int newrn, newln, newm, newn, maxln, maxrn, maxn, maxm;
-int n, m, ln, rn;
-
+int newRN, newLN, newM, newN, maxLN, maxRN, maxN, maxM;
 
 // For calculation of seconds
-
-double diffclock(clock_t clock1, clock_t clock2) {
-    double diffticks = clock1 - clock2;
-    double diffms = (diffticks * 10) / CLOCKS_PER_SEC;
-    return diffms;
+double diff_clock(clock_t clock1, clock_t clock2) {
+    double diff_ticks = (double) clock1 - (double) clock2;
+    double diff_ms = (diff_ticks * 10) / CLOCKS_PER_SEC;
+    return diff_ms;
 }
 
-/*
-double diffclock(clock_t clock1,clock_t clock2)
-{
-	double diffticks=clock1-clock2;
-	double diffms=(diffticks)/CLOCKS_PER_SEC;
-	return diffms;
-}
-*/
-
-long int returnMiliSeconds() {
-    struct timeval tp;
-    gettimeofday(&tp, NULL);
+long int returnMilliSeconds() {
+    struct timeval tp{};
+    gettimeofday(&tp, nullptr);
     long int ms = tp.tv_sec * 1000 + tp.tv_usec / 1000;
     return ms;
 }
 
-int main(int argc, char *argv[]) {
-    string x, y;
-    int lcount, rcount, mcount, ix, iy;
-    map<string, int>::iterator itm;
-    vector<int> *pvec;
-    FILE *fp;
-    IntPair pr;
-
-    int i, j, k, eno, isol;
-
-    int rc;
-    double solnTime = 0;
-
-    long int timeBefore = 0;
-    long int timeAfter = 0;
-
-    long int countLSoln = 0;
-    long int countRSoln = 0;
-
-    cout << "/**************************************************/" << endl;
-    cout << "	       GUROBI2'S RUN " << endl;
-    cout << "/**************************************************/" << endl;
-
-    ////////////// read the graph
-    lcount = 0;
-    rcount = 0;
-    mcount = 0;
-    lnodes.push_back(NULL);
-    rnodes.push_back(NULL);
-    llabels.push_back("");
-    rlabels.push_back("");
-    while (cin >> x) {
-        cin >> y;
-        itm = linkmap.find(x);
-        if (itm != linkmap.end()) {
-            ix = itm->second;
-        } else {
-            lcount++;
-            linkmap[x] = lcount;
-            ix = lcount;
-            pvec = new vector<int>;
-            lnodes.push_back(pvec);
-            llabels.push_back(x);
-        }
-        itm = linkmap.find(y);
-        if (itm != linkmap.end()) {
-            iy = itm->second;
-        } else {
-            rcount++;
-            linkmap[y] = rcount;
-            iy = rcount;
-            pvec = new vector<int>;
-            rnodes.push_back(pvec);
-            rlabels.push_back(y);
-        }
-
-        rnodes[iy]->push_back(ix);
-        lnodes[ix]->push_back(iy);
-        mcount++;
+void print_list(double *list, int size) {
+    cout << "[";
+    for (int i = 0; i < size - 1; i++) {
+        cout << list[i] << " ";
     }
-    cout << "/**************************************************/" << endl;
-    cout << "	       COMPLETE FILE READING                    " << endl;
-    cout << "/**************************************************/" << endl;
-    clock_t begin = clock();
-    timeBefore = returnMiliSeconds();
+    cout << list[size - 1] << "]" << endl;
+}
 
-    //////////// print statistics
-#ifdef DEBUG_ENABLE
-    cout << lcount << " " << rcount << " " << mcount << endl;
-#endif
-    n = lnodes.size() + rnodes.size() - 2;
-    m = mcount;
-    ln = lnodes.size() - 1;
-    rn = rnodes.size() - 1;
+int main(int argc, char *argv[]) {
+    int i, j, eno, isol;
+    int rc;
+
+    long int timeBefore;
+    long int timeAfter;
+
+    ////////////// Read the graph
+    int l_count = 0; // Number of nodes in the left partition
+    int r_count = 0; // Number of nodes in the right partition
+    int m_count = 0; // Number of edges in the graph
+
+    L_NODES.push_back(nullptr);
+    R_NODES.push_back(nullptr);
+    L_LABELS.emplace_back("");
+    R_LABELS.emplace_back("");
+
+    string firstNode, secondNode;
+    int idx_firstNode, idx_secondNode;
+    map<string, int>::iterator itm;     // Iterator
+    vector<int> *adj_vector;            // Adjacency vector
+    map<string, int> linkMap;
+
+    while (cin >> firstNode) {
+        cin >> secondNode;
+        itm = linkMap.find(firstNode);
+        if (itm != linkMap.end()) {
+            idx_firstNode = itm->second;
+        } else {
+            l_count++;
+            linkMap[firstNode] = l_count;
+            idx_firstNode = l_count;
+            adj_vector = new vector<int>;
+            L_NODES.push_back(adj_vector);
+            L_LABELS.push_back(firstNode);
+        }
+        itm = linkMap.find(secondNode);
+        if (itm != linkMap.end()) {
+            idx_secondNode = itm->second;
+        } else {
+            r_count++;
+            linkMap[secondNode] = r_count;
+            idx_secondNode = r_count;
+            adj_vector = new vector<int>;
+            R_NODES.push_back(adj_vector);
+            R_LABELS.push_back(secondNode);
+        }
+
+        R_NODES[idx_secondNode]->push_back(idx_firstNode);
+        L_NODES[idx_firstNode]->push_back(idx_secondNode);
+        m_count++;
+    }
+
+    /// Print statistics
+    clock_t begin = clock();
+    timeBefore = returnMilliSeconds();
+
+    // Update global variables
+    N = l_count + r_count;
+    M = m_count;
+    LN = l_count; // There are one dummy node at the beginning
+    RN = r_count; // There are one dummy node at the beginning
 
     /* allocate memory */
-    sol = (double *) malloc((n + m) * sizeof(double));
-    maxsol = (double *) malloc((n + m) * sizeof(double));
-    ind = (int *) malloc((n + m) * sizeof(int));
-    val = (double *) malloc((n + m) * sizeof(double));
-    obj = (double *) malloc((n + m) * sizeof(double));
-    vtype = (char *) malloc((n + m) * sizeof(char));
-    lmask = (int *) malloc(lnodes.size() * sizeof(int));
-    rmask = (int *) malloc(rnodes.size() * sizeof(int));
-    enoarr = (int *) malloc((n + m) * sizeof(int));
+    sol = (double *) malloc((N + M) * sizeof(double));
+    maxsol = (double *) malloc((N + M) * sizeof(double));
+    ind = (int *) malloc((N + M) * sizeof(int));
+    val = (double *) malloc((N + M) * sizeof(double));
+    obj = (double *) malloc((N + M) * sizeof(double));
+    vtype = (char *) malloc((N + M) * sizeof(char));
+    lmask = (int *) malloc(L_NODES.size() * sizeof(int));
+    rmask = (int *) malloc(R_NODES.size() * sizeof(int));
+    enoarr = (int *) malloc((N + M) * sizeof(int));
 
-    for (i = 1; i < lnodes.size(); i++) {
+    for (i = 1; i < L_NODES.size(); i++) {
         enoarr[i - 1] = i - 1;
         lmask[i] = 1;
     }
-    for (i = 1; i < rnodes.size(); i++) {
-        enoarr[ln + i - 1] = ln + i - 1;
+
+    for (i = 1; i < R_NODES.size(); i++) {
+        enoarr[LN + i - 1] = LN + i - 1;
         rmask[i] = 1;
     }
-    eno = lnodes.size() + rnodes.size() - 2;
-    for (i = 1; i < lnodes.size(); i++) {
-        for (j = 0; j < (*(lnodes[i])).size(); j++) {
+
+    IntPair pr;
+    eno = L_NODES.size() + R_NODES.size() - 2;
+
+    for (i = 1; i < L_NODES.size(); i++) {
+        for (j = 0; j < (*(L_NODES[i])).size(); j++) {
             pr.x = i;
-            pr.y = (*(lnodes[i]))[j];
-            edgemap[pr] = eno;
+            pr.y = (*(L_NODES[i]))[j];
+            EDGE_MAP[pr] = eno;
             enoarr[eno] = eno;
-            // cout << "edge " <<  pr.x << " " << pr.y << " " << eno << endl ;
             eno++;
         }
     }
 
-    //solvegurobi2(lcount,rcount,mcount,3,3) ;
-    rc = quadsearch(lcount, rcount, mcount, 1, 1, lcount, rcount);
-    printf("COMPLETED MAXEDGES: %d\n", rc);
-    cout << lcount << " " << rcount << " " << mcount << endl;
-    //masknodes(2,2) ;
-    //solvegurobi2(lcount,rcount,mcount,2,2) ;
-    // graphviz(maxsol) ;
+    /* Create environment */
+    GRBloadenv(&gurobi_env, nullptr);
 
-    timeAfter = returnMiliSeconds();
+    /* Execute algorithm */
+    rc = quad_search(1, 1, l_count, r_count);
+
+    /* Free environment */
+    if (gurobi_env != nullptr) {
+        GRBfreeenv(gurobi_env);
+    }
+
+    timeAfter = returnMilliSeconds();
     clock_t end = clock();
-    solnTime = double(diffclock(end, begin));
+    double execution_time = diff_clock(end, begin);
 
+    long int countLSoln = 0;
+    long int countRSoln = 0;
 
-    for (i = 0; i < maxln; i++) {
-        isol = maxsol[i];
+    for (i = 0; i < maxLN; i++) {
+        isol = (int) maxsol[i];
         if (isol) {
-            //printf("[%2d] %d\n",i,isol);
             countRSoln++;
         }
     }
-    printf("----\n");
-    for (i = maxln; i < (maxn); i++) {
-        isol = maxsol[i];
+    printf("----\n") ;
+    for (i = maxLN; i < (maxN); i++) {
+        isol = (int) maxsol[i];
         if (isol) {
-            //printf("[%2d] %d\n",i,isol);
             countLSoln++;
         }
     }
 
-
-    printf("Soln Time: %ld - %ld\n", timeAfter, timeBefore);
+    printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, execution_time,
+            ((double) (timeAfter - timeBefore) / 1000.0));
     FILE *fptr2 = fopen("status.txt", "w");
-    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, solnTime,
+    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, execution_time,
             ((double) (timeAfter - timeBefore) / 1000.0));
     fclose(fptr2);
-
     return 0;
 }
 
-void graphviz(double *sol) {
-    ofstream myfile;
-    myfile.open("graph.gv");
+void graphviz(const double *solution) {
+    ofstream outFile;
+    outFile.open("graph.gv");
     int i, j, k, isol;
-    int ln, rn;
-
-    ln = lnodes.size() - 1;
-    rn = rnodes.size() - 1;
 
     // begin graph
-    myfile << "graph G {" << endl;
+    outFile << "graph G {" << endl;
 
     // left vertices at the same level
-    myfile << "  { rank = same ";
-    for (i = 1; i < llabels.size(); i++) {
-        myfile << " ; " << llabels[i];
+    outFile << "  { rank = same ";
+    for (i = 1; i < L_LABELS.size(); i++) {
+        outFile << " ; " << L_LABELS[i];
     }
-    myfile << "  } ;" << endl;
-
+    outFile << "  } ;" << endl;
 
     // right vertices at the same level
-    myfile << "  { rank = same ";
-    for (i = 1; i < rlabels.size(); i++) {
-        myfile << " ; " << rlabels[i];
+    outFile << "  { rank = same ";
+    for (i = 1; i < R_LABELS.size(); i++) {
+        outFile << " ; " << R_LABELS[i];
     }
-    myfile << "  } ;" << endl;
+    outFile << "  } ;" << endl;
 
     // draw nodes
-    for (i = 1; i < lnodes.size(); i++) {
-        isol = sol[i - 1];
+    for (i = 1; i < L_NODES.size(); i++) {
+        isol = (int) solution[i - 1];
         if (isol) {
-            myfile << "   " << llabels[i] << " [style=filled fillcolor=red] ; " << endl;
+            outFile << "   " << L_LABELS[i] << " [style=filled fillcolor=red] ; " << endl;
         }
     }
-    for (i = 1; i < rnodes.size(); i++) {
-        isol = sol[ln + i - 1];
+
+    for (i = 1; i < R_NODES.size(); i++) {
+        isol = (int) solution[LN + i - 1];
         if (isol) {
-            myfile << "   " << rlabels[i] << " [style=filled fillcolor=red] ; " << endl;
+            outFile << "   " << R_LABELS[i] << " [style=filled fillcolor=red] ; " << endl;
         }
     }
 
     // draw edges
-    k = ln + rn;
-    for (i = 1; i < lnodes.size(); i++) {
-        for (j = 0; j < (*(lnodes[i])).size(); j++) {
-            myfile << "  " << llabels[i] << " -- " << rlabels[(*(lnodes[i]))[j]];
-            isol = sol[k];
+    k = LN + RN;
+    for (i = 1; i < L_NODES.size(); i++) {
+        for (j = 0; j < (*(L_NODES[i])).size(); j++) {
+            outFile << "  " << L_LABELS[i] << " -- " << R_LABELS[(*(L_NODES[i]))[j]];
+            isol = (int) solution[k];
             if (isol) {
-                myfile << " [color=red] ";
+                outFile << " [color=red] ";
             }
-            myfile << " ; " << endl;
+            outFile << " ; " << endl;
             k++;
         }
     }
 
     // end graph
-    myfile << "}" << endl;
-    myfile.close();
+    outFile << "}" << endl;
+    outFile.close();
     system("dot -Tpng graph.gv > graph.png");
+    system("dot -Tsvg graph.gv > graph.svg");
 }
 
-int solvegurobi2(
-        int ln,
-        int rn,
-        int m,
-        int I,
-        int J) {
-    GRBenv *env = NULL;
-    GRBmodel *model = NULL;
-    int error = 0;
-    int rc;
+int solve_gurobi(int I, int J) {
+    GRBenv *env = gurobi_env;
+    GRBmodel *model = nullptr;
+    int error;
+    int is_opt_successful;
 
-    int optimstatus;
-    double objval;
+    int optimization_status;
+    double objective_value;
     int n, i, j, degree, k;
     IntPair pr;
     map<IntPair, int>::iterator ei;
     char str[10];
-    int isol;
 
-    n = ln + rn;
-    rc = 0;
-
-    if (!shallwesolve(I, J)) {
+    if (!shall_we_solve(I, J)) {
         return (0);
     }
 
-    /* Create environment */
-    error = GRBloadenv(&env, NULL);
-    if (error) goto QUIT;
-
+    if (env == nullptr) {
+        /* Create environment */
+        cout << "Create gurobi environment" << endl;
+        error = GRBloadenv(&env, nullptr);
+        if (error) goto QUIT;
+    }
 
     GRBsetdblparam(env, "Heuristics", 0.05);
     GRBsetintparam(env, "TuneJobs", 32000);
@@ -342,22 +334,19 @@ int solvegurobi2(
     GRBsetdblparam(env, "TimeLimit", 10.0);
 
     /* Create an empty model */
-    error = GRBnewmodel(env, &model, "biclique", 0, NULL, NULL, NULL, NULL, NULL);
+    error = GRBnewmodel(env, &model, "biclique", 0, nullptr, nullptr, nullptr, nullptr, nullptr);
     if (error) goto QUIT;
 
-    //error = GRBsetintparam(env, GRB_INT_PAR_THREADS,8);
-    //if (error) goto QUIT;
-
     /* Add variables */
-    for (i = 0; i < newn; i++) {
+    for (i = 0; i < newN; i++) {
         obj[i] = 0;
         vtype[i] = GRB_BINARY;
     }
-    for (i = newn; i < (newn + newm); i++) {
+    for (i = newN; i < (newN + newM); i++) {
         obj[i] = 1;
         vtype[i] = GRB_BINARY;
     }
-    error = GRBaddvars(model, newn + newm, 0, NULL, NULL, NULL, obj, NULL, NULL, vtype, NULL);
+    error = GRBaddvars(model, newN + newM, 0, nullptr, nullptr, nullptr, obj, nullptr, nullptr, vtype, nullptr);
     if (error) goto QUIT;
 
     /* Change objective sense to maximization */
@@ -370,40 +359,36 @@ int solvegurobi2(
 
     k = 0;
     /* constraint 2  */
-    for (i = 1; i < lnodes.size(); i++) {
-        for (j = 0; j < (*(lnodes[i])).size(); j++) {
+    for (i = 1; i < L_NODES.size(); i++) {
+        for (j = 0; j < (*(L_NODES[i])).size(); j++) {
             pr.x = i;
-            pr.y = (*(lnodes[i]))[j];
-            ei = edgemap.find(pr);
-            if (ei != edgemap.end()) {
+            pr.y = (*(L_NODES[i]))[j];
+            ei = EDGE_MAP.find(pr);
+            if (ei != EDGE_MAP.end()) {
                 ind[0] = i - 1;
-                ind[1] = ln + (*(lnodes[i]))[j] - 1;
+                ind[1] = LN + (*(L_NODES[i]))[j] - 1;
                 ind[2] = ei->second;
                 val[0] = 1;
                 val[1] = 1;
                 val[2] = -2;
                 sprintf(str, "c%d", k++);
-                error = GRBaddconstr(model, 3, ind, val, GRB_GREATER_EQUAL, 0, str);
-//          if (error) goto QUIT;
             } else {
                 cout << "Error(1): edge cannot be found" << endl;
                 exit(0);
             }
         }
     }
-    /*************/
-
 
     /* constraint 3 */
-    for (i = 1; i < lnodes.size(); i++) {
+    for (i = 1; i < L_NODES.size(); i++) {
         if (!lmask[i]) continue;
         degree = 0;
-        for (j = 0; j < (*(lnodes[i])).size(); j++) {
+        for (j = 0; j < (*(L_NODES[i])).size(); j++) {
             pr.x = i;
-            pr.y = (*(lnodes[i]))[j];
+            pr.y = (*(L_NODES[i]))[j];
             if (!rmask[pr.y]) continue;
-            ei = edgemap.find(pr);
-            if (ei != edgemap.end()) {
+            ei = EDGE_MAP.find(pr);
+            if (ei != EDGE_MAP.end()) {
                 ind[degree] = enoarr[ei->second];
                 val[degree] = 1;
                 degree++;
@@ -420,20 +405,16 @@ int solvegurobi2(
         if (error) goto QUIT;
     }
 
-#ifndef DEBUG_ENABLE
-    printf("passed 1\n") ;
-#endif
-
     /* constraint 4 */
-    for (i = 1; i < rnodes.size(); i++) {
+    for (i = 1; i < R_NODES.size(); i++) {
         if (!rmask[i]) continue;
         degree = 0;
-        for (j = 0; j < (*(rnodes[i])).size(); j++) {
+        for (j = 0; j < (*(R_NODES[i])).size(); j++) {
             pr.y = i;
-            pr.x = (*(rnodes[i]))[j];
+            pr.x = (*(R_NODES[i]))[j];
             if (!lmask[pr.x]) continue;
-            ei = edgemap.find(pr);
-            if (ei != edgemap.end()) {
+            ei = EDGE_MAP.find(pr);
+            if (ei != EDGE_MAP.end()) {
                 ind[degree] = enoarr[ei->second];
                 val[degree] = 1;
                 degree++;
@@ -442,7 +423,7 @@ int solvegurobi2(
                 exit(0);
             }
         }
-        ind[degree] = enoarr[ln + i - 1];
+        ind[degree] = enoarr[LN + i - 1];
         val[degree] = -I;
         degree++;
         sprintf(str, "c%d", k++);
@@ -450,135 +431,86 @@ int solvegurobi2(
         if (error) goto QUIT;
     }
 
-#ifndef DEBUG_ENABLE
-    printf("passed 2\n") ;
-#endif
-
     /* constraint 5 */
-    for (i = 0; i < newln; i++) {
+    for (i = 0; i < newLN; i++) {
         ind[i] = i;
         val[i] = 1;
     }
     sprintf(str, "c%d", k++);
-    error = GRBaddconstr(model, newln, ind, val, GRB_EQUAL, I, str);
+    error = GRBaddconstr(model, newLN, ind, val, GRB_EQUAL, I, str);
     if (error) goto QUIT;
 
-#ifndef DEBUG_ENABLE
-    printf("passed 3\n") ;
-#endif
-
     /* constraint 6 */
-    for (i = 0; i < newrn; i++) {
-        ind[i] = newln + i;
+    for (i = 0; i < newRN; i++) {
+        ind[i] = newLN + i;
         val[i] = 1;
     }
     sprintf(str, "c%d", k++);
-    error = GRBaddconstr(model, newrn, ind, val, GRB_EQUAL, J, str);
+    error = GRBaddconstr(model, newRN, ind, val, GRB_EQUAL, J, str);
     if (error) goto QUIT;
-
-#ifndef DEBUG_ENABLE
-    printf("passed 4\n") ;
-#endif
-
-    //GRBsetintparam(env, "ConcurrentMIP", 8);
 
     /* Optimize model */
     error = GRBoptimize(model);
     if (error) goto QUIT;
 
-#ifndef DEBUG_ENABLE
-    printf("passed 5\n") ;
-#endif
-
-    ///* Write model to 'mip1.lp' */
-    //error = GRBwrite(model, "biclique.lp");
-    //if (error) goto QUIT;
-
     /* Capture solution information */
-    error = GRBgetintattr(model, GRB_INT_ATTR_STATUS, &optimstatus);
+    error = GRBgetintattr(model, GRB_INT_ATTR_STATUS, &optimization_status);
     if (error) goto QUIT;
 
-#ifndef DEBUG_ENABLE
-    printf("passed 6\n") ;
-#endif
-
-    error = GRBgetdblattr(model, GRB_DBL_ATTR_OBJVAL, &objval);
+    error = GRBgetdblattr(model, GRB_DBL_ATTR_OBJVAL, &objective_value);
     if (error) goto QUIT;
 
-#ifndef DEBUG_ENABLE
-    printf("passed 7\n") ;
-#endif
-
-    error = GRBgetdblattrarray(model, GRB_DBL_ATTR_X, 0, newn + newm, sol);
+    error = GRBgetdblattrarray(model, GRB_DBL_ATTR_X, 0, newN + newM, sol);
     if (error) goto QUIT;
 
-#ifndef DEBUG_ENABLE
-    printf("passed 8\n") ;
-#endif
-
-    printf("\nOptimization complete\n");
-    if (optimstatus == GRB_OPTIMAL) {
-        printf("Optimal objective: %.0f\n", objval);
-        if (maxobjval < objval) {
-            maxobjval = objval;
-            memcpy(maxsol, sol, (newn + newm) * sizeof(double));
-            maxn = newn;
-            maxm = newm;
-            maxln = newln;
-            maxrn = newrn;
+    if (optimization_status == GRB_OPTIMAL) {
+        if (maxobjval < objective_value) {
+            maxobjval = objective_value;
+            memcpy(maxsol, sol, (newN + newM) * sizeof(double));
+            maxN = newN;
+            maxM = newM;
+            maxLN = newLN;
+            maxRN = newRN;
         }
-        rc = 1;
-    } else if (optimstatus == GRB_INF_OR_UNBD) {
+        is_opt_successful = 1;
+    } else if (optimization_status == GRB_INF_OR_UNBD) {
         printf("Model is infeasible or unbounded\n");
-        rc = 0;
-        updateclist(I, J);
+        is_opt_successful = 0;
+        update_coord_list(I, J);
     } else {
         printf("Optimization was stopped early\n");
-        rc = 0;
-        updateclist(I, J);
+        is_opt_successful = 0;
+        update_coord_list(I, J);
     }
-#ifndef DEBUG_ENABLE
-    printf("passed 9\n") ;
-#endif
+
     QUIT:
 
     /* Error reporting */
     if (error) {
-        printf("ERROR: %s\n", GRBgeterrormsg(env));
-        rc = 0;
-        updateclist(I, J);
+//        printf("ERROR: %s\n", GRBgeterrormsg(env));
+        is_opt_successful = 0;
+        update_coord_list(I, J);
     }
 
     /* Free model */
-    if (model != NULL) {
+    if (model != nullptr) {
         GRBfreemodel(model);
     }
 
-    /* Free environment */
-    if (env != NULL) {
-        GRBfreeenv(env);
-    }
-//#ifndef DEBUG_ENABLE
-    printf("SOLVE: %d %d %d\n", I, J, rc);
-//#endif
+//    /* Free environment */
+//    if (env != NULL) {
+//        GRBfreeenv(env);
+//    }
 
-    return (rc);
+    return (is_opt_successful);
 }
 
-int quadsearch(
-        int ln,
-        int rn,
-        int m,
-        int IL,
-        int JL,
-        int IR,
-        int JR) {
-    int maxedges;
+int quad_search(int IL, int JL, int IR, int JR) {
+    int maxEdges;
     int m1, m2, m3;
     int I, J;
     int exists;
 
-    printf("quadsearch(%d,%d,%d,%d)\n", IL, JL, IR, JR);
     if (IL > IR) return (0);
     if (JL > JR) return (0);
     I = (IL + IR) / 2;
@@ -586,139 +518,83 @@ int quadsearch(
 
     exists = 1;
     if (maxobjval < I * J) {
-        masknodes(I, J);
-        exists = solvegurobi2(ln, rn, m, I, J);
+        mask_nodes(I, J);
+        exists = solve_gurobi(I, J);
     }
+
     if (exists) {
-        maxedges = I * J;
-
-#ifndef DEBUG_ENABLE
-        printf("MAXEDGES: %d\n",maxedges) ;
-#endif
-
-        m1 = quadsearch(ln, rn, m, I + 1, J + 1, IR, JR);
-        m2 = quadsearch(ln, rn, m, IL, J + 1, I, JR);
-        m3 = quadsearch(ln, rn, m, I + 1, JL, IR, J);
+        maxEdges = I * J;
+        m1 = quad_search(I + 1, J + 1, IR, JR);
+        m2 = quad_search(IL, J + 1, I, JR);
+        m3 = quad_search(I + 1, JL, IR, J);
     } else {
-        maxedges = 0;
-        m1 = quadsearch(ln, rn, m, IL, JL, I - 1, J - 1);
-        m2 = quadsearch(ln, rn, m, IL, J, I - 1, JR);
-        m3 = quadsearch(ln, rn, m, I, JL, IR, J - 1);
+        maxEdges = 0;
+        m1 = quad_search(IL, JL, I - 1, J - 1);
+        m2 = quad_search(IL, J, I - 1, JR);
+        m3 = quad_search(I, JL, IR, J - 1);
     }
 
-    if (maxedges < m1) {
-        maxedges = m1;
+    if (maxEdges < m1) {
+        maxEdges = m1;
     }
-    if (maxedges < m2) {
-        maxedges = m2;
+    if (maxEdges < m2) {
+        maxEdges = m2;
     }
-    if (maxedges < m3) {
-        maxedges = m3;
+    if (maxEdges < m3) {
+        maxEdges = m3;
     }
-    return (maxedges);
+    return (maxEdges);
 }
 
-int shallwesolve(
-        int I,
-        int J) {
+int shall_we_solve(int I, int J) {
     list<Coord>::iterator li;
 
-    if (newln * newrn < I * J) return (0);
-    for (li = clist.begin(); li != clist.end(); li++) {
+    if (newLN * newRN < I * J) return (0);
+    for (li = coord_list.begin(); li != coord_list.end(); li++) {
         if (((*li).x <= I) && ((*li).y <= J)) return (0);
     }
     return (1);
 }
 
-void updateclist(
-        int I,
-        int J) {
+void update_coord_list(int I, int J) {
     list<Coord>::iterator li;
-    Coord cr;
+    struct Coord cr = Coord(I, J);
 
-    cr.x = I;
-    cr.y = J;
-    li = clist.begin();
-    while (li != clist.end()) {
+    li = coord_list.begin();
+    while (li != coord_list.end()) {
         if (((*li).x >= I) && ((*li).y >= J)) {
-            li = clist.erase(li);
+            li = coord_list.erase(li);
         }
         li++;
     }
-    clist.push_front(cr);
+    coord_list.push_front(cr);
 }
 
-void masknodes(
-        int I,
-        int J) {
+void mask_nodes(int I, int J) {
     int i, j;
     int eno, neno;
+    newN = N;
+    newLN = LN;
+    newRN = RN;
+    newM = M;
 
-    newn = n;
-    newln = ln;
-    newrn = rn;
-    newm = m;
-
-    for (i = 1; i < lnodes.size(); i++) {
+    for (i = 1; i < L_NODES.size(); i++) {
         lmask[i] = 0;
-        if ((*(lnodes[i])).size() >= J) {
+        if ((*(L_NODES[i])).size() >= J) {
             lmask[i] = 1;
         }
     }
 
-    for (i = 1; i < rnodes.size(); i++) {
+    for (i = 1; i < R_NODES.size(); i++) {
         rmask[i] = 0;
-        if ((*(rnodes[i])).size() >= I) {
+        if ((*(R_NODES[i])).size() >= I) {
             rmask[i] = 1;
         }
     }
 
-    //cout << "I:" << I << "-J:" << J << endl;
-/*    
-    for(i=1 ; i < lnodes.size() ; i++) {
-         
-	 int countUnMasked = 0;
-	 for(int k=1 ; k < (*(lnodes[i])).size() ; k++){
-	    if ( !lmask[(*(lnodes[i]))[k]] )
-	    {
-		countUnMasked++;
-	    }
-	 } 
-	 
-	 if ( countUnMasked <= J )  {
-           //cout << i << " masked cause " << countUnMasked << " <" << J << endl;
-           lmask[i] = 0;
-         }
-	 else
-	 {
-	   //cout << i << " unmasked cause " << countUnMasked << " <" << J << endl;
-	 }
-    }
-*/
-/*
-    for(i=1 ; i < rnodes.size() ; i++) {
-
-         int countUnMasked = 0;
-         for(int k=1 ; k < (*(rnodes[i])).size() ; k++){
-            if ( !lmask[(*(rnodes[i]))[k]] )
-            {
-                countUnMasked++;
-            }
-         }
-
-         if ( countUnMasked <= I )  {
-           //cout << i << " masked cause " << countUnMasked << " <" << J << endl;
-           rmask[i] = 0;
-         }
-         else
-         {
-           //cout << i << " unmasked cause " << countUnMasked << " <" << J << endl;
-         }
-    }
- */
     eno = 0;
     neno = 0;
-    for (i = 1; i < lnodes.size(); i++) {
+    for (i = 1; i < L_NODES.size(); i++) {
 
         if (lmask[i]) {
             enoarr[eno] = neno;
@@ -726,31 +602,26 @@ void masknodes(
         }
         eno++;
     }
-    newln = neno;
+    newLN = neno;
 
-    for (i = 1; i < rnodes.size(); i++) {
+    for (i = 1; i < R_NODES.size(); i++) {
         if (rmask[i]) {
             enoarr[eno] = neno;
             neno++;
         }
         eno++;
     }
-    newn = neno;
-    newrn = newn - newln;
+    newN = neno;
+    newRN = newN - newLN;
 
-
-    for (i = 1; i < lnodes.size(); i++) {
-        for (j = 0; j < (*(lnodes[i])).size(); j++) {
-            if (lmask[i] && rmask[(*(lnodes[i]))[j]]) {
+    for (i = 1; i < L_NODES.size(); i++) {
+        for (j = 0; j < (*(L_NODES[i])).size(); j++) {
+            if (lmask[i] && rmask[(*(L_NODES[i]))[j]]) {
                 enoarr[eno] = neno;
                 neno++;
             }
             eno++;
         }
     }
-    newm = neno - newn;
+    newM = neno - newN;
 }
-
-
-
-

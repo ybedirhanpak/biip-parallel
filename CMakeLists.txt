@@ -7,6 +7,10 @@ add_executable(biip_parallel biip.cpp)
 
 include_directories($ENV{GUROBI_HOME}/include/)
 find_library(GUROBI_LIB NAMES gurobi91 gurobi_c++ PATHS $ENV{GUROBI_HOME}/bin/)
-target_link_libraries(biip_parallel ${GUROBI_LIB} pthread m)
 
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(biip_parallel PUBLIC OpenMP::OpenMP_CXX ${GUROBI_LIB} pthread m)
+endif()
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Xpreprocessor -fopenmp")
