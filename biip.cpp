@@ -72,11 +72,6 @@ double *maxsol;         // keeps the solution array when the obj val is found ma
 
 // Used in only gurobi solve
 GRBenv *gurobi_env = nullptr;
-double *sol;            // solution array that is filled after gurobi solve
-int *ind;
-double *val;
-double *obj;
-char *vtype;
 
 // Used in multiple functions, needs to be localized
 list<Coord> coord_list; // coordinates list
@@ -171,12 +166,7 @@ int main(int argc, char *argv[]) {
     RN = r_count; // There are one dummy node at the beginning
 
     /* allocate memory */
-    sol = (double *) malloc((N + M) * sizeof(double));
     maxsol = (double *) malloc((N + M) * sizeof(double));
-    ind = (int *) malloc((N + M) * sizeof(int));
-    val = (double *) malloc((N + M) * sizeof(double));
-    obj = (double *) malloc((N + M) * sizeof(double));
-    vtype = (char *) malloc((N + M) * sizeof(char));
     lmask = (int *) malloc(L_NODES.size() * sizeof(int));
     rmask = (int *) malloc(R_NODES.size() * sizeof(int));
     enoarr = (int *) malloc((N + M) * sizeof(int));
@@ -228,7 +218,7 @@ int main(int argc, char *argv[]) {
             countRSoln++;
         }
     }
-    printf("----\n") ;
+    printf("----\n");
     for (i = maxLN; i < (maxN); i++) {
         isol = (int) maxsol[i];
         if (isol) {
@@ -237,7 +227,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, execution_time,
-            ((double) (timeAfter - timeBefore) / 1000.0));
+           ((double) (timeAfter - timeBefore) / 1000.0));
     FILE *fptr2 = fopen("status.txt", "w");
     fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, execution_time,
             ((double) (timeAfter - timeBefore) / 1000.0));
@@ -304,6 +294,14 @@ void graphviz(const double *solution) {
 }
 
 int solve_gurobi(int I, int J) {
+    // Previously global but now local variables
+    int *ind = (int *) malloc((N + M) * sizeof(int));
+    auto *val = (double *) malloc((N + M) * sizeof(double));
+    auto *obj = (double *) malloc((N + M) * sizeof(double));
+    auto *vtype = (char *) malloc((N + M) * sizeof(char));
+    auto *sol = (double *) malloc((N + M) * sizeof(double));    // solution array that is filled after gurobi solve
+
+    // Previously local variables
     GRBenv *env = gurobi_env;
     GRBmodel *model = nullptr;
     int error;
@@ -501,6 +499,13 @@ int solve_gurobi(int I, int J) {
 //    if (env != NULL) {
 //        GRBfreeenv(env);
 //    }
+
+    // Free memory allocated inside the function
+    free(ind);
+    free(val);
+    free(obj);
+    free(vtype);
+    free(sol);
 
     return (is_opt_successful);
 }
