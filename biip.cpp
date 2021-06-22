@@ -41,17 +41,17 @@ struct Coord {
 // Function Prototypes
 void graphviz(const double *);
 
-int solve_gurobi(int I, int J);
+int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM);
 
 int quad_search(int IL, int JL, int IR, int JR);
 
-int shall_we_solve(int I, int J);
+int shall_we_solve(int I, int J, int newLN, int newRN);
 
 void update_coord_list(int I, int J);
 
-void mask_nodes(int I, int J);
+void mask_nodes(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM);
 
-/// Input variables
+/// Variables initialized once and not changed
 
 // Number of nodes, edges
 int N, M;
@@ -63,22 +63,20 @@ vector<vector<int> *> L_NODES;
 vector<vector<int> *> R_NODES;
 vector<string> L_LABELS;
 vector<string> R_LABELS;
+int *R_MASK;
+int *L_MASK;
+int *ENO_ARR;
 
-/// Computational Variables
+/// Result variables
+double MAX_OBJ_VAL = 0;
+double *MAX_SOL;         // keeps the solution array when the obj val is found maximum
+int maxLN, maxRN, maxN, maxM;
 
-// Result variables
-double maxobjval = 0;
-double *maxsol;         // keeps the solution array when the obj val is found maximum
-
-// Used in only gurobi solve
+/// Variables used in only gurobi solve
 GRBenv *gurobi_env = nullptr;
 
-// Used in multiple functions, needs to be localized
-list<Coord> coord_list; // coordinates list
-int *rmask;
-int *lmask;
-int *enoarr;
-int newRN, newLN, newM, newN, maxLN, maxRN, maxN, maxM;
+/// Used in multiple functions
+list<Coord> COORD_LIST;
 
 // For calculation of seconds
 double diff_clock(clock_t clock1, clock_t clock2) {
@@ -166,19 +164,19 @@ int main(int argc, char *argv[]) {
     RN = r_count; // There are one dummy node at the beginning
 
     /* allocate memory */
-    maxsol = (double *) malloc((N + M) * sizeof(double));
-    lmask = (int *) malloc(L_NODES.size() * sizeof(int));
-    rmask = (int *) malloc(R_NODES.size() * sizeof(int));
-    enoarr = (int *) malloc((N + M) * sizeof(int));
+    MAX_SOL = (double *) malloc((N + M) * sizeof(double));
+    L_MASK = (int *) malloc(L_NODES.size() * sizeof(int));
+    R_MASK = (int *) malloc(R_NODES.size() * sizeof(int));
+    ENO_ARR = (int *) malloc((N + M) * sizeof(int));
 
     for (i = 1; i < L_NODES.size(); i++) {
-        enoarr[i - 1] = i - 1;
-        lmask[i] = 1;
+        ENO_ARR[i - 1] = i - 1;
+        L_MASK[i] = 1;
     }
 
     for (i = 1; i < R_NODES.size(); i++) {
-        enoarr[LN + i - 1] = LN + i - 1;
-        rmask[i] = 1;
+        ENO_ARR[LN + i - 1] = LN + i - 1;
+        R_MASK[i] = 1;
     }
 
     IntPair pr;
@@ -189,7 +187,7 @@ int main(int argc, char *argv[]) {
             pr.x = i;
             pr.y = (*(L_NODES[i]))[j];
             EDGE_MAP[pr] = eno;
-            enoarr[eno] = eno;
+            ENO_ARR[eno] = eno;
             eno++;
         }
     }
@@ -213,14 +211,14 @@ int main(int argc, char *argv[]) {
     long int countRSoln = 0;
 
     for (i = 0; i < maxLN; i++) {
-        isol = (int) maxsol[i];
+        isol = (int) MAX_SOL[i];
         if (isol) {
             countRSoln++;
         }
     }
     printf("----\n");
     for (i = maxLN; i < (maxN); i++) {
-        isol = (int) maxsol[i];
+        isol = (int) MAX_SOL[i];
         if (isol) {
             countLSoln++;
         }
@@ -293,7 +291,7 @@ void graphviz(const double *solution) {
     system("dot -Tsvg graph.gv > graph.svg");
 }
 
-int solve_gurobi(int I, int J) {
+int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM) {
     // Previously global but now local variables
     int *ind = (int *) malloc((N + M) * sizeof(int));
     auto *val = (double *) malloc((N + M) * sizeof(double));
@@ -314,7 +312,7 @@ int solve_gurobi(int I, int J) {
     map<IntPair, int>::iterator ei;
     char str[10];
 
-    if (!shall_we_solve(I, J)) {
+    if (!shall_we_solve(I, J, newLN, newRN)) {
         return (0);
     }
 
@@ -462,9 +460,9 @@ int solve_gurobi(int I, int J) {
     if (error) goto QUIT;
 
     if (optimization_status == GRB_OPTIMAL) {
-        if (maxobjval < objective_value) {
-            maxobjval = objective_value;
-            memcpy(maxsol, sol, (newN + newM) * sizeof(double));
+        if (MAX_OBJ_VAL < objective_value) {
+            MAX_OBJ_VAL = objective_value;
+            memcpy(MAX_SOL, sol, (newN + newM) * sizeof(double));
             maxN = newN;
             maxM = newM;
             maxLN = newLN;
@@ -522,9 +520,19 @@ int quad_search(int IL, int JL, int IR, int JR) {
     J = (JL + JR) / 2;
 
     exists = 1;
-    if (maxobjval < I * J) {
-        mask_nodes(I, J);
-        exists = solve_gurobi(I, J);
+    if (MAX_OBJ_VAL < I * J) {
+        // Previously used in multiple places
+        int *rmask = (int *) malloc((N + M) * sizeof(double));
+        int *lmask = (int *) malloc((N + M) * sizeof(double));
+        int *enoarr = (int *) malloc((N + M) * sizeof(double));
+        int newRN, newLN, newM, newN;
+
+        mask_nodes(I, J, rmask, lmask, enoarr, newRN, newLN, newM, newN);
+        exists = solve_gurobi(I, J, rmask, lmask, enoarr, newRN, newLN, newM, newN);
+
+        free(rmask);
+        free(lmask);
+        free(enoarr);
     }
 
     if (exists) {
@@ -551,11 +559,11 @@ int quad_search(int IL, int JL, int IR, int JR) {
     return (maxEdges);
 }
 
-int shall_we_solve(int I, int J) {
+int shall_we_solve(int I, int J, int newLN, int newRN) {
     list<Coord>::iterator li;
 
     if (newLN * newRN < I * J) return (0);
-    for (li = coord_list.begin(); li != coord_list.end(); li++) {
+    for (li = COORD_LIST.begin(); li != COORD_LIST.end(); li++) {
         if (((*li).x <= I) && ((*li).y <= J)) return (0);
     }
     return (1);
@@ -565,19 +573,24 @@ void update_coord_list(int I, int J) {
     list<Coord>::iterator li;
     struct Coord cr = Coord(I, J);
 
-    li = coord_list.begin();
-    while (li != coord_list.end()) {
+    li = COORD_LIST.begin();
+    while (li != COORD_LIST.end()) {
         if (((*li).x >= I) && ((*li).y >= J)) {
-            li = coord_list.erase(li);
+            li = COORD_LIST.erase(li);
         }
         li++;
     }
-    coord_list.push_front(cr);
+    COORD_LIST.push_front(cr);
 }
 
-void mask_nodes(int I, int J) {
+void mask_nodes(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM) {
     int i, j;
     int eno, neno;
+
+    // Copy values from input variables
+    memcpy(rmask, R_MASK, (N + M) * sizeof(int));
+    memcpy(lmask, L_MASK, (N + M) * sizeof(int));
+    memcpy(enoarr, ENO_ARR, (N + M) * sizeof(int));
     newN = N;
     newLN = LN;
     newRN = RN;
