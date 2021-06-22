@@ -63,7 +63,7 @@ void graphviz(const double *);
 
 int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM);
 
-int quad_search(int IL, int JL, int IR, int JR);
+void quad_search(int IL, int JL, int IR, int JR);
 
 int shall_we_solve(int I, int J, int newLN, int newRN);
 
@@ -125,7 +125,6 @@ void print_list(double *list, int size) {
 
 int main(int argc, char *argv[]) {
     int i, j, eno, isol;
-    int rc;
 
     long int timeBefore;
     long int timeAfter;
@@ -214,7 +213,6 @@ int main(int argc, char *argv[]) {
             eno++;
         }
     }
-
     /** Initialize Gurobi Variables */
     omp_set_dynamic(0);
     omp_set_max_active_levels(3);
@@ -224,7 +222,7 @@ int main(int argc, char *argv[]) {
     GRBloadenv(&gurobi_env, nullptr);
 
     /* Execute algorithm */
-    rc = quad_search(1, 1, l_count, r_count);
+    quad_search(1, 1, l_count, r_count);
 
     /* Free environment */
     if (gurobi_env != nullptr) {
@@ -252,10 +250,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, execution_time,
+    printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int)MAX_OBJ_VAL, execution_time,
            ((double) (timeAfter - timeBefore) / 1000.0));
     FILE *fptr2 = fopen("status.txt", "w");
-    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, rc, execution_time,
+    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int)MAX_OBJ_VAL, execution_time,
             ((double) (timeAfter - timeBefore) / 1000.0));
     fclose(fptr2);
     return 0;
@@ -541,15 +539,14 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
     return (is_opt_successful);
 }
 
-int quad_search(int IL, int JL, int IR, int JR) {
-    // printf("quadsearch(%d, %d, %d, %d),\t\t threads: %d,\t current: %d\n", IL, JL, IR, JR, omp_get_num_threads(), omp_get_thread_num());
+void quad_search(int IL, int JL, int IR, int JR) {
+//    printf("quad_search(%d, %d, %d, %d),\t\t threads: %d,\t current: %d\n", IL, JL, IR, JR, omp_get_num_threads(), omp_get_thread_num());
 
-    int maxEdges;
     int I, J;
     int exists;
 
-    if (IL > IR) return (0);
-    if (JL > JR) return (0);
+    if (IL > IR) return;
+    if (JL > JR) return;
     I = (IL + IR) / 2;
     J = (JL + JR) / 2;
 
@@ -570,42 +567,27 @@ int quad_search(int IL, int JL, int IR, int JR) {
     }
 
     int quad_search_params[3][4];
-    int ms[3];
 
     if (exists) {
-        maxEdges = I * J;
         int paramsToCopy[3][4] = {{I + 1, J + 1, IR, JR},
                                   {IL,    J + 1, I,  JR},
                                   {I + 1, JL,    IR, J}};
         std::copy(decayed_begin(paramsToCopy), decayed_end(paramsToCopy), decayed_begin(quad_search_params));
     } else {
-        maxEdges = 0;
         int paramsToCopy[3][4] = {{IL, JL, I - 1, J - 1},
                                   {IL, J,  I - 1, JR},
                                   {I,  JL, IR,    J - 1}};
         std::copy(decayed_begin(paramsToCopy), decayed_end(paramsToCopy), decayed_begin(quad_search_params));
     }
 
-    #pragma omp parallel for shared(ms, quad_search_params) default(none) num_threads(3)
+    #pragma omp parallel for shared(quad_search_params) default(none) num_threads(3)
     {
         for (int i = 0; i < 3; i++)
         {
-            ms[i] = quad_search(quad_search_params[i][0], quad_search_params[i][1], quad_search_params[i][2],
+            quad_search(quad_search_params[i][0], quad_search_params[i][1], quad_search_params[i][2],
                                 quad_search_params[i][3]);
-//            printf("i: %d, value: %d, total: %d, current: %d\n", i, ms[i], omp_get_num_threads(), omp_get_thread_num());
         }
     }
-
-    if (maxEdges < ms[0]) {
-        maxEdges = ms[0];
-    }
-    if (maxEdges < ms[1]) {
-        maxEdges = ms[1];
-    }
-    if (maxEdges < ms[2]) {
-        maxEdges = ms[2];
-    }
-    return (maxEdges);
 }
 
 int shall_we_solve(int I, int J, int newLN, int newRN) {
