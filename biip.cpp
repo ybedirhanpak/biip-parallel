@@ -10,6 +10,8 @@
 #include <list>
 #include <algorithm>
 #include <omp.h>
+#include <queue>          // std::queue
+#include <utility>
 
 extern "C" {
 #include "gurobi_c.h"
@@ -43,6 +45,13 @@ typedef struct IntPair {
     int y;
 } IntPair;
 
+typedef struct Quad {
+    int IL;
+    int JL;
+    int IR;
+    int JR;
+} Quad;
+
 struct IntPairCompare {
     bool operator()(const IntPair &first, const IntPair &second) const {
         return first.x < second.x || (first.x == second.x && first.y < second.y);
@@ -71,8 +80,10 @@ void update_coord_list(int I, int J);
 
 void mask_nodes(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, int &newLN, int &newRN, int &newM);
 
-/// Variables initialized once and not changed
+void execute_tasks();
 
+
+/// Variables initialized once and not changed
 // Number of nodes, edges
 int N, M;
 // Number of left nodes, right nodes
@@ -98,8 +109,12 @@ GRBenv *gurobi_env = nullptr;
 /// Used in multiple functions
 list<Coord> COORD_LIST;
 
-// OpenMP Variables
+/// OpenMP Variables
 omp_lock_t coord_list_lock;
+std::queue<Quad> task_queue;
+int worker_count = 0;
+omp_lock_t queue_lock;
+omp_lock_t worker_count_lock;
 
 // For calculation of seconds
 double diff_clock(clock_t clock1, clock_t clock2) {
@@ -125,11 +140,15 @@ void print_list(double *list, int size) {
 
 int main(int argc, char *argv[]) {
     int i, j, eno, isol;
+    int limit_threads = 4;
+    if (argc > 1) {
+        limit_threads = stoi(argv[1]);
+    }
 
     long int timeBefore;
     long int timeAfter;
 
-    ////////////// Read the graph
+    /// Read the graph
     int l_count = 0; // Number of nodes in the left partition
     int r_count = 0; // Number of nodes in the right partition
     int m_count = 0; // Number of edges in the graph
@@ -213,18 +232,26 @@ int main(int argc, char *argv[]) {
             eno++;
         }
     }
+
     /** Initialize Gurobi Variables */
     omp_set_dynamic(0);
-    omp_set_max_active_levels(3);
     omp_init_lock(&coord_list_lock);
+    omp_init_lock(&queue_lock);
+    omp_init_lock(&worker_count_lock);
 
-    /* Create environment */
+    /** Create environment */
     GRBloadenv(&gurobi_env, nullptr);
 
-    /* Execute algorithm */
-    quad_search(1, 1, l_count, r_count);
+    /** Adding first task to Queue*/
+    task_queue.push({1, 1, l_count, r_count});
 
-    /* Free environment */
+    /** Execute algorithm */
+#pragma omp parallel num_threads(limit_threads) shared(worker_count, task_queue) default(none)
+    {
+        execute_tasks();
+    }
+
+    /** Free environment */
     if (gurobi_env != nullptr) {
         GRBfreeenv(gurobi_env);
     }
@@ -250,10 +277,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int)MAX_OBJ_VAL, execution_time,
+    printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int) MAX_OBJ_VAL, execution_time,
            ((double) (timeAfter - timeBefore) / 1000.0));
     FILE *fptr2 = fopen("status.txt", "w");
-    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int)MAX_OBJ_VAL, execution_time,
+    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int) MAX_OBJ_VAL, execution_time,
             ((double) (timeAfter - timeBefore) / 1000.0));
     fclose(fptr2);
     return 0;
@@ -490,6 +517,7 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
 #pragma omp critical
         {
             if (MAX_OBJ_VAL < objective_value) {
+                printf("Optimal = %d found for I: %d, J: %d\n", (int) objective_value, I, J);
                 MAX_OBJ_VAL = objective_value;
                 memcpy(MAX_SOL, sol, (newN + newM) * sizeof(double));
                 maxN = newN;
@@ -501,11 +529,11 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
 
         is_opt_successful = 1;
     } else if (optimization_status == GRB_INF_OR_UNBD) {
-        printf("Model is infeasible or unbounded\n");
+        printf("Model is infeasible or unbounded for I: %d, J: %d\n", I, J);
         is_opt_successful = 0;
         update_coord_list(I, J);
     } else {
-        printf("Optimization was stopped early\n");
+        printf("Optimization was stopped early for I: %d, J: %d\n", I, J);
         is_opt_successful = 0;
         update_coord_list(I, J);
     }
@@ -514,7 +542,6 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
 
     /* Error reporting */
     if (error) {
-//        printf("ERROR: %s\n", GRBgeterrormsg(env));
         is_opt_successful = 0;
         update_coord_list(I, J);
     }
@@ -523,11 +550,6 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
     if (model != nullptr) {
         GRBfreemodel(model);
     }
-
-//    /* Free environment */
-//    if (env != NULL) {
-//        GRBfreeenv(env);
-//    }
 
     // Free memory allocated inside the function
     free(ind);
@@ -539,9 +561,39 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
     return (is_opt_successful);
 }
 
-void quad_search(int IL, int JL, int IR, int JR) {
-//    printf("quad_search(%d, %d, %d, %d),\t\t threads: %d,\t current: %d\n", IL, JL, IR, JR, omp_get_num_threads(), omp_get_thread_num());
+void execute_tasks() {
+    while (worker_count > 0 || !task_queue.empty()) {
+        if (!task_queue.empty()) {
+            omp_set_lock(&queue_lock);
 
+            if (task_queue.empty()) {
+                omp_unset_lock(&queue_lock);
+                continue;
+            }
+
+            /** Increase worker counts */
+            omp_set_lock(&worker_count_lock);
+            worker_count++;
+            omp_unset_lock(&worker_count_lock);
+
+            /** Pop task from queue */
+            auto temp = task_queue.front();
+            task_queue.pop();
+
+            omp_unset_lock(&queue_lock);
+
+            /** Execute Task */
+            quad_search(temp.IL, temp.JL, temp.IR, temp.JR);
+
+            /** Decrease worker counts */
+            omp_set_lock(&worker_count_lock);
+            worker_count--;
+            omp_unset_lock(&worker_count_lock);
+        }
+    }
+}
+
+void quad_search(int IL, int JL, int IR, int JR) {
     int I, J;
     int exists;
 
@@ -566,28 +618,20 @@ void quad_search(int IL, int JL, int IR, int JR) {
         free(enoarr);
     }
 
-    int quad_search_params[3][4];
-
+    /** Create new tasks */
+    omp_set_lock(&queue_lock);
     if (exists) {
-        int paramsToCopy[3][4] = {{I + 1, J + 1, IR, JR},
-                                  {IL,    J + 1, I,  JR},
-                                  {I + 1, JL,    IR, J}};
-        std::copy(decayed_begin(paramsToCopy), decayed_end(paramsToCopy), decayed_begin(quad_search_params));
-    } else {
-        int paramsToCopy[3][4] = {{IL, JL, I - 1, J - 1},
-                                  {IL, J,  I - 1, JR},
-                                  {I,  JL, IR,    J - 1}};
-        std::copy(decayed_begin(paramsToCopy), decayed_end(paramsToCopy), decayed_begin(quad_search_params));
-    }
+        task_queue.push({I + 1, J + 1, IR, JR});
+        task_queue.push({IL, J + 1, I, JR});
+        task_queue.push({I + 1, JL, IR, J});
 
-    #pragma omp parallel for shared(quad_search_params) default(none) num_threads(3)
-    {
-        for (int i = 0; i < 3; i++)
-        {
-            quad_search(quad_search_params[i][0], quad_search_params[i][1], quad_search_params[i][2],
-                                quad_search_params[i][3]);
-        }
+    } else {
+        task_queue.push({IL, JL, I - 1, J - 1});
+        task_queue.push({IL, J, I - 1, JR});
+        task_queue.push({I, JL, IR, J - 1});
+
     }
+    omp_unset_lock(&queue_lock);
 }
 
 int shall_we_solve(int I, int J, int newLN, int newRN) {
@@ -597,13 +641,6 @@ int shall_we_solve(int I, int J, int newLN, int newRN) {
     if (newLN * newRN < I * J) {
         omp_unset_lock(&coord_list_lock);
         return (0);
-    }
-
-    for (li = COORD_LIST.begin(); li != COORD_LIST.end(); li++) {
-        if (((*li).x <= I) && ((*li).y <= J)) {
-            omp_unset_lock(&coord_list_lock);
-            return (0);
-        }
     }
 
     omp_unset_lock(&coord_list_lock);
