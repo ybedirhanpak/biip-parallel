@@ -1,5 +1,16 @@
+# IDE
 cmake-build-debug
+.idea
+.vscode
+
+# OS
+.DS_Store
 
 # biip outputs
 biip
 status.txt
+out
+biip_original/biip
+
+# Python script
+venv
