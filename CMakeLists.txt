@@ -14,4 +14,3 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Xpreprocessor -fopenmp")
-set(OMP_THREAD_LIMIT 8)
