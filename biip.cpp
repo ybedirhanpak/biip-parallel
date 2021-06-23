@@ -102,6 +102,7 @@ int *ENO_ARR;
 double MAX_OBJ_VAL = 0;
 double *MAX_SOL;         // keeps the solution array when the obj val is found maximum
 int maxLN, maxRN, maxN, maxM;
+int resultI, resultJ;
 
 /// Variables used in only gurobi solve
 GRBenv *gurobi_env = nullptr;
@@ -139,12 +140,26 @@ void print_list(double *list, int size) {
 }
 
 int main(int argc, char *argv[]) {
-    int i, j, eno, isol;
-    int limit_threads = 4;
+    int THREAD_LIMIT = 4;
+    string INPUT_FILE = "./data/all_gene_disease_associations-gurobi.txt";
+    string OUTPUT_FILE = "./biip_parallel_output.txt";
+
     if (argc > 1) {
-        limit_threads = stoi(argv[1]);
+        THREAD_LIMIT = stoi(argv[1]);
     }
 
+    if (argc > 2) {
+        INPUT_FILE = argv[2];
+    }
+
+    if (argc > 3) {
+        OUTPUT_FILE = argv[3];
+    }
+
+    printf("BIIP Sequential\n");
+    printf("Thread Limit: %d\t Input file: %s\n", THREAD_LIMIT, INPUT_FILE.c_str());
+
+    int i, j, eno, isol;
     long int timeBefore;
     long int timeAfter;
 
@@ -164,8 +179,11 @@ int main(int argc, char *argv[]) {
     vector<int> *adj_vector;            // Adjacency vector
     map<string, int> linkMap;
 
-    while (cin >> firstNode) {
-        cin >> secondNode;
+    fstream input;
+    input.open(INPUT_FILE, ios::in);
+
+    while (input >> firstNode) {
+        input >> secondNode;
         itm = linkMap.find(firstNode);
         if (itm != linkMap.end()) {
             idx_firstNode = itm->second;
@@ -193,6 +211,8 @@ int main(int argc, char *argv[]) {
         L_NODES[idx_firstNode]->push_back(idx_secondNode);
         m_count++;
     }
+
+    input.close();
 
     /// Print statistics
     clock_t begin = clock();
@@ -246,7 +266,7 @@ int main(int argc, char *argv[]) {
     task_queue.push({1, 1, l_count, r_count});
 
     /** Execute algorithm */
-#pragma omp parallel num_threads(limit_threads) shared(worker_count, task_queue) default(none)
+#pragma omp parallel num_threads(THREAD_LIMIT) shared(worker_count, task_queue) default(none)
     {
         execute_tasks();
     }
@@ -266,23 +286,30 @@ int main(int argc, char *argv[]) {
     for (i = 0; i < maxLN; i++) {
         isol = (int) MAX_SOL[i];
         if (isol) {
-            countRSoln++;
+            countLSoln++;
         }
     }
     printf("----\n");
     for (i = maxLN; i < (maxN); i++) {
         isol = (int) MAX_SOL[i];
         if (isol) {
-            countLSoln++;
+            countRSoln++;
         }
     }
 
-    printf("%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int) MAX_OBJ_VAL, execution_time,
-           ((double) (timeAfter - timeBefore) / 1000.0));
-    FILE *fptr2 = fopen("status.txt", "w");
-    fprintf(fptr2, "%d\t%ld\t%ld\t%d\t%lf\t%f", 1, countRSoln, countLSoln, (int) MAX_OBJ_VAL, execution_time,
+    /// Print statistics to stdout
+    cout << "Output file: " << OUTPUT_FILE << endl;
+    printf("%5ld\t%5ld\t%5d\t%5f\n", countLSoln, countRSoln, (int) MAX_OBJ_VAL,
             ((double) (timeAfter - timeBefore) / 1000.0));
-    fclose(fptr2);
+
+    /// Print statistics to output file
+    FILE *output = fopen(OUTPUT_FILE.c_str(), "a");
+    fprintf(output, "Thread Limit: %d\t Input file: %s\n", THREAD_LIMIT, INPUT_FILE.c_str());
+    fprintf(output, "Left\tRight\tObjective\tTime\n");
+    fprintf(output, "%5ld\t%5ld\t%9d\t%5f\n", countLSoln, countRSoln, (int) MAX_OBJ_VAL,
+            ((double) (timeAfter - timeBefore) / 1000.0));
+    fprintf(output, "\n");
+    fclose(output);
     return 0;
 }
 
@@ -517,13 +544,15 @@ int solve_gurobi(int I, int J, int *rmask, int *lmask, int *enoarr, int &newN, i
 #pragma omp critical
         {
             if (MAX_OBJ_VAL < objective_value) {
-                printf("Optimal = %d found for I: %d, J: %d\n", (int) objective_value, I, J);
+//                printf("Optimal = %d found for I: %d, J: %d\n", (int) objective_value, I, J);
                 MAX_OBJ_VAL = objective_value;
                 memcpy(MAX_SOL, sol, (newN + newM) * sizeof(double));
                 maxN = newN;
                 maxM = newM;
                 maxLN = newLN;
                 maxRN = newRN;
+                resultI = I;
+                resultJ = J;
             }
         }
 
