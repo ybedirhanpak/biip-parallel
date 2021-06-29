@@ -1,0 +1,16 @@
+Input;Test;Left;Right;Edges
+GSE1000_series_matrix-gurobi.txt;T1;1357;10;11115
+all_gene_disease_associations-gurobi-Angiomyolipoma_kidney.txt;T2;1606;10;3114
+all_gene_disease_associations-gurobi-Female_Breast_Carcinoma.txt;T3;3752;55;15415
+all_gene_disease_associations-gurobi-Hormone refractory prostate cancer.txt;T4;4525;82;21976
+all_gene_disease_associations-gurobi-Maternal hypertension.txt;T5;1619;13;3467
+all_gene_disease_associations-gurobi-Pancreatic_Ductal_Adenocarcinoma.txt;T6;34;568;5165
+all_gene_disease_associations-gurobi-Taste sweet.txt;T7;500;19;1465
+all_gene_disease_associations-gurobi-Thrombotic stroke.txt;T8;1024;7;1674
+all_gene_disease_associations-gurobi.txt;T9;654;6;2192
+ath_MetabolicMap_NASC_734_69-gurobi.txt;T10;573;69;1401
+disease-gene-Boh2007-s2-gurobi.txt;T11;960;1029;3620
+drug-target-Yildirim2007-s2-gurobi.txt;T12;790;323;876
+drug-therapy-Nacher2008-s4-gurobi.txt;T13;880;84;1299
+human_4026_96-gurobi.txt;T14;3836;96;40197
+yeast_GOEnrichment_Gasch2000_2944_173-gurobi.txt;T15;930;160;7583

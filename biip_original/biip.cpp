@@ -116,6 +116,7 @@ int main(int argc,char *argv[])
         OUTPUT_FILE = argv[2];
     }
 
+    printf("BIIP sequential is running.\n");
     printf("Input file: %s\n", INPUT_FILE.c_str());
 
     string x,y ;
@@ -263,7 +264,7 @@ int main(int argc,char *argv[])
             countLSoln++;
         }
     }
-    printf("----\n") ;
+//    printf("----\n") ;
     for(i=maxln ; i < (maxn) ; i++) {
         isol = maxsol[i] ;
         if (isol) {
@@ -567,7 +568,7 @@ int solvegurobi2(
     if (optimstatus == GRB_OPTIMAL) {
 //        printf("Optimal objective: %.0f\n", objval);
         if (maxobjval < objval) {
-            printf("Optimal = %d found for I: %d, J: %d\n", (int) objval, I, J);
+//            printf("Optimal = %d found for I: %d, J: %d\n", (int) objval, I, J);
             maxobjval = objval ;
             memcpy (maxsol,sol,(newn+newm)*sizeof(double));
             maxn = newn ;

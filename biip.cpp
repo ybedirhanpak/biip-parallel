@@ -156,7 +156,7 @@ int main(int argc, char *argv[]) {
         OUTPUT_FILE = argv[3];
     }
 
-    printf("BIIP Sequential\n");
+    printf("BIIP Parallel is running.\n");
     printf("Thread Limit: %d\t Input file: %s\n", THREAD_LIMIT, INPUT_FILE.c_str());
 
     int i, j, eno, isol;
